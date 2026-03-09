@@ -9,6 +9,68 @@ An educational C++ webservice targeting the BeagleBone Black Rev C (ARM Cortex-A
 
 > **WARNING:** This software is intentionally vulnerable and must only be used in isolated educational environments. Never expose it to untrusted networks.
 
+## Required Tools
+
+### Linux (x86_64 / Debian-based)
+
+```bash
+# Build tools and cross-compiler
+sudo apt update
+sudo apt install build-essential gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+# GDB with ARM support
+sudo apt install gdb-multiarch
+
+# checksec (verify binary protections)
+sudo apt install checksec
+
+# ROPgadget (find ROP gadgets in binaries)
+pip install ROPgadget
+
+# pwntools (exploit development framework)
+pip install pwntools
+
+# curl (send HTTP requests / deliver payloads)
+sudo apt install curl
+```
+
+### macOS
+
+```bash
+# Homebrew (if not already installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# ARM cross-compiler toolchain
+brew install arm-linux-gnueabihf-binutils
+brew install osx-cross/arm/arm-linux-gnueabihf-gcc
+
+# checksec
+brew install checksec
+
+# ROPgadget
+pip install ROPgadget
+
+# pwntools
+pip install pwntools
+
+# GDB (note: lldb is the default macOS debugger; GDB requires code-signing)
+brew install gdb
+
+# curl (pre-installed on macOS, but can be updated)
+brew install curl
+```
+
+### Tool Summary
+
+| Tool | Purpose |
+|------|---------|
+| `gcc` / `g++` (ARM cross-compiler) | Compile the vulnerable binary for ARM32 |
+| `gdb` / `gdb-multiarch` | Debug the service, catch crashes, inspect registers and stack |
+| `checksec` | Verify binary protections are disabled (no RELRO, no canary, NX off, no PIE) |
+| `ROPgadget` | Scan the binary for usable ROP gadgets (`pop {r0, pc}`, etc.) |
+| `pwntools` | Generate cyclic patterns, find crash offsets, craft exploit payloads |
+| `curl` | Interact with HTTP endpoints and deliver overflow payloads |
+
 ## Building
 
 ### Native Build (on BBB)
