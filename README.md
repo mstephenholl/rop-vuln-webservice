@@ -117,6 +117,43 @@ The service requires root for LED sysfs access:
 sudo ./rop-webservice
 ```
 
+### Run Remotely from Dev Machine (SSH)
+
+Set your BBB connection details once in the dev shell:
+
+```bash
+export BBB_USER=<your-bbb-username>
+export BBB_IP_ADDR=<your-bbb-ip>
+export BBB_IP_PORT=8080
+```
+
+After building (either natively via `ssh ${BBB_USER}@${BBB_IP_ADDR} "cd <repo> && make"` or by cross-compiling and `scp`'ing the binary), launch the service in the background from your dev machine. The SSH session can close without killing it:
+
+```bash
+ssh ${BBB_USER}@${BBB_IP_ADDR} \
+  "cd ~/rop-vuln-webservice && nohup ./rop-webservice > server.log 2>&1 < /dev/null & disown"
+```
+
+The three pieces matter:
+- `nohup` — process ignores `SIGHUP` when its controlling terminal goes away
+- `</dev/null` and `>server.log 2>&1` — fully detach stdin/stdout/stderr from the SSH pty
+- `& disown` — background the job and remove it from the shell's job table
+
+Verify it's running and reachable:
+
+```bash
+ssh ${BBB_USER}@${BBB_IP_ADDR} "pgrep -af rop-webservice"
+curl http://${BBB_IP_ADDR}:${BBB_IP_PORT}/temperature
+```
+
+> **Note:** Standard output is block-buffered (4 KB) when redirected to a file, so `server.log` may appear empty immediately after launch even though startup messages were printed. They flush when the buffer fills or the process exits. For live logs, either run interactively over `ssh -t` or prefix with `stdbuf -oL ./rop-webservice`.
+
+Stop the service cleanly (the `SIGINT` lets the signal handler join threads, stop the Pi worker, and turn off the LEDs — don't `kill -9`):
+
+```bash
+ssh ${BBB_USER}@${BBB_IP_ADDR} "pkill -INT rop-webservice"
+```
+
 ### Disable ASLR (required for reliable ROP exploitation)
 
 ```bash
