@@ -12,9 +12,14 @@ SOURCES  = $(SRCDIR)/main.cpp \
            $(SRCDIR)/led.cpp \
            $(SRCDIR)/pi_calc.cpp
 
+# -no-pie was added in GCC 6.0; older toolchains (e.g. BBB Debian 8 g++ 4.9)
+# don't recognise it but also don't enable PIE by default, so omitting it is safe.
+GCC_MAJOR := $(shell $(CXX) -dumpversion | cut -d. -f1)
+NO_PIE    := $(shell [ $(GCC_MAJOR) -ge 6 ] && echo -no-pie)
+
 # Intentionally vulnerable flags for ROP education
-VULN_CXXFLAGS = -fno-stack-protector -no-pie -O0 -g -std=c++11
-VULN_LDFLAGS  = -no-pie -z execstack -lpthread
+VULN_CXXFLAGS = -fno-stack-protector $(NO_PIE) -O0 -g -std=c++11
+VULN_LDFLAGS  = $(NO_PIE) -z execstack -lpthread
 
 # Safe flags with protections enabled
 SAFE_CXXFLAGS = -fstack-protector-strong -pie -fPIE -O2 -g -std=c++11 \
