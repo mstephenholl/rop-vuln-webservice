@@ -1,9 +1,11 @@
 #include "handlers.h"
 #include "temperature.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 // Prevent compiler from optimizing away the vulnerable functions
 #pragma GCC optimize("O0")
@@ -105,6 +107,75 @@ HttpResponse handle_pi_digit(const std::string& path) {
     snprintf(json, sizeof(json),
              "{\"n\": %d, \"digit\": %u, \"computed\": %d}",
              n, (unsigned)d, g_pi_calc.count());
+
+    HttpResponse resp;
+    resp.status_code = 200;
+    resp.status_text = "OK";
+    resp.body = json;
+    return resp;
+}
+
+// POST /pi/label
+// VULNERABLE: user-controlled format string passed to snprintf.
+// Conversion specifiers in the body operate on whatever happens to be in
+// the calling registers / on the stack: %x leaks register and stack words,
+// %s dereferences them as a string pointer, and %n writes the running
+// byte count to a pointer in arg position. On ARM32 the first vararg lives
+// in r3 and subsequent args spill to the stack, so positional specifiers
+// like %5$x walk into the saved frame.
+HttpResponse handle_pi_label(const std::string& body) {
+    char formatted[512];
+
+    // --- FORMAT-STRING VULNERABILITY: body acts as the format string ---
+    snprintf(formatted, sizeof(formatted), body.c_str());
+    // --------------------------------------------------------------------
+
+    // Reflect the formatted output back to the caller. The %s here is a
+    // *correct* use of the format API — it prevents the response wrapper
+    // from re-parsing the result as a format string a second time.
+    char json[768];
+    snprintf(json, sizeof(json),
+             "{\"label\": \"%s\"}", formatted);
+
+    HttpResponse resp;
+    resp.status_code = 200;
+    resp.status_text = "OK";
+    resp.body = json;
+    return resp;
+}
+
+// POST /pi/toggle
+// VULNERABLE: TOCTOU race on m_running. Even though HTTP requests are
+// serialised on the main thread, the pi worker thread runs concurrently
+// and can transition m_running false (when computation completes) between
+// our observation and our action. Acting on the stale read takes the
+// "start" branch, which move-assigns over a still-joinable m_thread —
+// std::thread's contract calls std::terminate() in that case, killing the
+// service. The deliberate 100 ms sleep widens the window so the race is
+// reachable from a single client.
+HttpResponse handle_pi_toggle() {
+    // --- TOCTOU VULNERABILITY: time-of-check ---
+    bool was_running = g_pi_calc.running();
+    // --------------------------------------------
+
+    // Window during which the pi worker can change m_running underneath us.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // --- TOCTOU VULNERABILITY: time-of-use ---
+    const char* action;
+    if (was_running) {
+        g_pi_calc.stop();
+        action = "stopped";
+    } else {
+        g_pi_calc.start();
+        action = "started";
+    }
+    // ------------------------------------------
+
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"toggled\": \"%s\", \"now_running\": %s}",
+             action, g_pi_calc.running() ? "true" : "false");
 
     HttpResponse resp;
     resp.status_code = 200;

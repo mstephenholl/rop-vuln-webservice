@@ -65,6 +65,12 @@ static HttpResponse route(const HttpRequest& req) {
     if (req.method == "POST" && req.path == "/pi/stop") {
         return handle_pi_stop(req.body);
     }
+    if (req.method == "POST" && req.path == "/pi/label") {
+        return handle_pi_label(req.body);
+    }
+    if (req.method == "POST" && req.path == "/pi/toggle") {
+        return handle_pi_toggle();
+    }
     if (req.method == "GET" && req.path == "/pi/status") {
         return handle_pi_status();
     }

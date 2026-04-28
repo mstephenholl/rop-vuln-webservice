@@ -14,5 +14,7 @@ HttpResponse handle_pi_start(const std::string& body);
 HttpResponse handle_pi_stop(const std::string& body);
 HttpResponse handle_pi_status();
 HttpResponse handle_pi_digit(const std::string& path);
+HttpResponse handle_pi_label(const std::string& body);
+HttpResponse handle_pi_toggle();
 
 #endif // HANDLERS_H

