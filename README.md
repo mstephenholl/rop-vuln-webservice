@@ -207,6 +207,22 @@ curl http://localhost:8080/pi/status
 # {"running": true, "digit": 3, "place": 1}
 ```
 
+### GET /pi/digit?n=&lt;int&gt;
+
+Returns the nth digit of Pi as emitted by the spigot algorithm so far. Indexing is 1-based and matches the existing `/pi/status` `place` field — `n=1` is the leading `3`, `n=2` is `1`, `n=3` is `4`, and so on. The `computed` field reports how many digits have been finalised in the buffer.
+
+```bash
+curl "http://localhost:8080/pi/digit?n=1"
+# {"n": 1, "digit": 3, "computed": 42}     (Pi = 3.14159…)
+
+curl "http://localhost:8080/pi/digit?n=5"
+# {"n": 5, "digit": 5, "computed": 42}
+```
+
+> Production is slow at `-O0`: on a 1 GHz Cortex-A8 each outer spigot iteration is ~3.3 M operations, yielding roughly 1 digit/sec. The buffer is mostly zeros early on, which is fine for the lab — the OOB-read primitive depends on bytes *adjacent* to the buffer, not its contents.
+
+**Vulnerable:** `n` is parsed with `atoi` and used directly as an array index without bounds checking. Negative or out-of-range values trigger an out-of-bounds read from BSS, giving an attacker a primitive for leaking adjacent globals — including GOT entries — to defeat libc ASLR. Reads far past the buffer eventually walk into unmapped pages and segfault the worker; this is intentional and useful as a crash-oracle for memory-layout discovery.
+
 ## LED Behavior
 
 | LED | Function | Behavior |
@@ -276,14 +292,43 @@ Common useful gadgets for ARM32:
 - `pop {r0, r1, pc}` — set two arguments and jump
 - Address of `system()` in libc for ret2libc
 
+### Vulnerability Summary
+
+| Endpoint | Handler | Class | Primitive | How |
+|----------|---------|-------|-----------|-----|
+| `POST /pi/start` | `handle_pi_start` | Stack overflow | Arbitrary code redirect | `strcpy` into 64-byte `config_buf` |
+| `POST /pi/stop` | `handle_pi_stop` | Stack overflow | Arbitrary code redirect | `sprintf("%s", body)` into 48-byte `reason_buf` |
+| `GET /pi/digit?n=N` | `handle_pi_digit` | OOB read | Arbitrary memory read | Unchecked signed int index into BSS digit buffer |
+
+Stack-overflow offsets depend on compiler stack-frame layout — use GDB to determine them for your build.
+
+### Composing the OOB Read with the Stack Overflow (ASLR Bypass)
+
+The `/pi/digit` endpoint hands you an arbitrary 1-byte read at any `(int)` offset from `g_pi_calc.m_digits`. Because the binary is non-PIE, the digit buffer's address is fixed and discoverable; libc, by contrast, is randomised. You can defeat that randomisation in three steps:
+
+1. Locate the digit buffer and the GOT in the binary:
+   ```bash
+   objdump -t rop-webservice | grep -E "g_pi_calc|_GLOBAL_OFFSET_TABLE_"
+   readelf -r rop-webservice | grep -E "system|printf"
+   ```
+
+2. Use the OOB read to leak a libc-resolved GOT entry one byte at a time. ARM32 pointers are 4 bytes, little-endian:
+   ```bash
+   # delta = printf@got - &g_pi_calc.m_digits[0]; n is 1-based.
+   for i in 1 2 3 4; do
+     curl -s "http://${BBB_IP_ADDR}:${BBB_IP_PORT}/pi/digit?n=$((delta + i))" \
+       | python3 -c "import sys, json; print(hex(json.load(sys.stdin)['digit']))"
+   done
+   ```
+
+3. Reassemble the four bytes → libc address of `printf`. Subtract `printf`'s offset within libc to get the libc base, then compute the addresses of `system()` and `"/bin/sh"` for a ret2libc payload through the `/pi/start` overflow.
+
 ### Buffer Sizes and Expected Offsets
 
 | Endpoint | Function | Buffer | Size | Overflow via |
 |----------|----------|--------|------|-------------|
 | `/pi/start` | `handle_pi_start` | `config_buf` | 64 bytes | `strcpy` |
 | `/pi/stop` | `handle_pi_stop` | `reason_buf` | 48 bytes | `sprintf` |
-
-Exact offsets depend on compiler stack frame layout — use GDB to determine them for your build.
 
 ### Proving the Overflow
 

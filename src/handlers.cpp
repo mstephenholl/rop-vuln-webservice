@@ -2,6 +2,7 @@
 #include "temperature.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 // Prevent compiler from optimizing away the vulnerable functions
@@ -71,6 +72,39 @@ HttpResponse handle_pi_stop(const std::string& body) {
     snprintf(json, sizeof(json),
              "{\"status\": \"stopped\", \"digit\": %d, \"place\": %d}",
              digit, place);
+
+    HttpResponse resp;
+    resp.status_code = 200;
+    resp.status_text = "OK";
+    resp.body = json;
+    return resp;
+}
+
+// GET /pi/digit?n=<int>
+// VULNERABLE: signed int parsed via atoi is used as an unchecked array
+// index, producing an out-of-bounds read primitive. Combine with the stack
+// overflows in /pi/start and /pi/stop to leak GOT entries (defeating ASLR
+// for libc) and stage a ret2libc / ROP chain.
+HttpResponse handle_pi_digit(const std::string& path) {
+    int n = 1;  // default to first decimal digit if no query supplied
+    size_t qpos = path.find("?n=");
+    if (qpos != std::string::npos) {
+        // --- ROP VULNERABILITY: atoi accepts negative and oversized values ---
+        n = atoi(path.c_str() + qpos + 3);
+        // ---------------------------------------------------------------------
+    }
+
+    // --- ROP VULNERABILITY: out-of-bounds read on signed int index ---
+    // The accessor performs no bounds check. n is 1-based for the public
+    // API, so we subtract 1; that means n == 0 already reads one byte
+    // before the buffer (a free OOB primitive without even using a query).
+    unsigned char d = g_pi_calc.digit_at(n - 1);
+    // ------------------------------------------------------------------
+
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"n\": %d, \"digit\": %u, \"computed\": %d}",
+             n, (unsigned)d, g_pi_calc.count());
 
     HttpResponse resp;
     resp.status_code = 200;

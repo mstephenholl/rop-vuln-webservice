@@ -68,6 +68,10 @@ static HttpResponse route(const HttpRequest& req) {
     if (req.method == "GET" && req.path == "/pi/status") {
         return handle_pi_status();
     }
+    if (req.method == "GET" &&
+        (req.path == "/pi/digit" || req.path.compare(0, 10, "/pi/digit?") == 0)) {
+        return handle_pi_digit(req.path);
+    }
 
     HttpResponse resp;
     resp.status_code = 404;

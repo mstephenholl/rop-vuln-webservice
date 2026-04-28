@@ -13,5 +13,6 @@ HttpResponse handle_temperature();
 HttpResponse handle_pi_start(const std::string& body);
 HttpResponse handle_pi_stop(const std::string& body);
 HttpResponse handle_pi_status();
+HttpResponse handle_pi_digit(const std::string& path);
 
 #endif // HANDLERS_H
