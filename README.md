@@ -1,11 +1,11 @@
 # ROP-Vulnerable Webservice for BeagleBone Black Rev C
 
-An educational C++ webservice targeting the BeagleBone Black Rev C (ARM Cortex-A8, Ubuntu 16.04) that:
+An educational C++ webservice targeting the BeagleBone Black Rev C (ARM Cortex-A8, BeagleBoard.org Debian 8 image, 2017-03-19) that:
 
 - Exposes processor temperature via HTTP
 - Computes Pi digits under sustained CPU load (Rabinowitz-Wagon spigot algorithm)
 - Controls the 4 user LEDs based on thermal thresholds
-- Contains **intentionally vulnerable** POST endpoints for demonstrating ARM32 ROP chain attacks
+- Contains **intentionally vulnerable** HTTP endpoints across four bug classes — stack overflow, out-of-bounds read, format string, and TOCTOU race — for ARM32 exploitation labs
 
 > **WARNING:** This software is intentionally vulnerable and must only be used in isolated educational environments. Never expose it to untrusted networks.
 
@@ -111,10 +111,11 @@ checksec --file=rop-webservice-safe
 
 ## Running
 
-The service requires root for LED sysfs access:
+LED control writes to `/sys/class/leds/...`, which usually requires root. Without root, those writes silently no-op (the service keeps running and serving HTTP normally — just without the LED feedback):
 
 ```bash
-sudo ./rop-webservice
+sudo ./rop-webservice   # with LED control
+./rop-webservice        # HTTP only; LED writes silently no-op
 ```
 
 ### Run Remotely from Dev Machine (SSH)
@@ -257,7 +258,7 @@ curl "http://localhost:8080/pi/digit?n=5"
 
 > Production is slow at `-O0`: on a 1 GHz Cortex-A8 each outer spigot iteration is ~3.3 M operations, yielding roughly 1 digit/sec. The buffer is mostly zeros early on, which is fine for the lab — the OOB-read primitive depends on bytes *adjacent* to the buffer, not its contents.
 
-**Vulnerable:** `n` is parsed with `atoi` and used directly as an array index without bounds checking. Negative or out-of-range values trigger an out-of-bounds read from BSS, giving an attacker a primitive for leaking adjacent globals — including GOT entries — to defeat libc ASLR. Reads far past the buffer eventually walk into unmapped pages and segfault the worker; this is intentional and useful as a crash-oracle for memory-layout discovery.
+**Vulnerable:** `n` is parsed with `atoi` and used directly as an array index without bounds checking. Negative or out-of-range values trigger an out-of-bounds read from BSS, giving an attacker a primitive for leaking adjacent globals — including GOT entries — to defeat libc ASLR. Reads far past the buffer eventually walk into unmapped pages and crash the entire service (the OOB load runs on the request-handling thread, so the SIGSEGV takes the whole process down); this is intentional and useful as a crash-oracle for memory-layout discovery.
 
 ## LED Behavior
 
@@ -291,17 +292,20 @@ The saved LR (link register) on the stack is the return address. Overwriting it 
 
 ### Finding the Offset to Saved LR
 
-1. Start the service under GDB:
+1. Start the service under GDB (use `sudo` only if you also want LED writes to succeed):
    ```bash
-   sudo gdb ./rop-webservice
+   gdb ./rop-webservice
    (gdb) run
    ```
 
-2. In another terminal, send an overflow pattern:
+2. In another terminal, send an overflow pattern. Note the use of
+   `sys.stdout.buffer.write` so Python 3 emits raw cyclic bytes instead of
+   a `b'...'` repr, and `curl --data-binary` so newlines in the payload are
+   preserved:
    ```bash
-   # Generate a cyclic pattern (install: pip install pwntools)
-   python3 -c "from pwn import *; print(cyclic(200))" | \
-     curl -X POST -d @- http://localhost:8080/pi/start
+   # Install: pip install pwntools
+   python3 -c "import sys; from pwn import *; sys.stdout.buffer.write(cyclic(200))" | \
+     curl -X POST --data-binary @- http://localhost:8080/pi/start
    ```
 
 3. GDB will catch the crash. Examine the PC value:
