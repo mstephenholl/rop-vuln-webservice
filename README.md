@@ -21,6 +21,17 @@ sudo apt install build-essential gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 # GDB with ARM support
 sudo apt install gdb-multiarch
 
+# GEF (GDB Enhanced Features — pretty registers, heap, ROP helpers)
+bash -c "$(curl -fsSL https://gef.blah.cat/sh)"
+
+# Rizin (reverse engineering framework; rz-bin, rz-asm, rizin REPL)
+sudo apt install rizin
+
+# Ghidra (NSA static analysis / decompiler — manual install)
+# 1. Install Java 17+: sudo apt install openjdk-17-jdk
+# 2. Download the latest release from https://github.com/NationalSecurityAgency/ghidra/releases
+# 3. Unzip and run: ./ghidraRun
+
 # checksec (verify binary protections)
 sudo apt install checksec
 
@@ -44,6 +55,18 @@ sudo apt install curl
 brew install arm-linux-gnueabihf-binutils
 brew install osx-cross/arm/arm-linux-gnueabihf-gcc
 
+# GDB (note: lldb is the default macOS debugger; GDB requires code-signing)
+brew install gdb
+
+# GEF (GDB Enhanced Features — pretty registers, heap, ROP helpers)
+bash -c "$(curl -fsSL https://gef.blah.cat/sh)"
+
+# Rizin (reverse engineering framework; rz-bin, rz-asm, rizin REPL)
+brew install rizin
+
+# Ghidra (NSA static analysis / decompiler)
+brew install --cask ghidra
+
 # checksec
 brew install checksec
 
@@ -52,9 +75,6 @@ pip install ROPgadget
 
 # pwntools
 pip install pwntools
-
-# GDB (note: lldb is the default macOS debugger; GDB requires code-signing)
-brew install gdb
 
 # curl (pre-installed on macOS, but can be updated)
 brew install curl
@@ -65,7 +85,9 @@ brew install curl
 | Tool | Purpose |
 |------|---------|
 | `gcc` / `g++` (ARM cross-compiler) | Compile the vulnerable binary for ARM32 |
-| `gdb` / `gdb-multiarch` | Debug the service, catch crashes, inspect registers and stack |
+| `gdb` / `gdb-multiarch` + GEF | Debug the service, catch crashes, inspect registers, stack, and ROP chains |
+| Rizin (`rizin`, `rz-bin`, `rz-asm`) | Static disassembly, gadget search, and binary analysis |
+| Ghidra | Decompile and graphically navigate the ARM32 binary |
 | `checksec` | Verify binary protections are disabled (no RELRO, no canary, NX off, no PIE) |
 | `ROPgadget` | Scan the binary for usable ROP gadgets (`pop {r0, pc}`, etc.) |
 | `pwntools` | Generate cyclic patterns, find crash offsets, craft exploit payloads |
