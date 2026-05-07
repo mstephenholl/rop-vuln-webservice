@@ -71,6 +71,59 @@ brew install curl
 | `pwntools` | Generate cyclic patterns, find crash offsets, craft exploit payloads |
 | `curl` | Interact with HTTP endpoints and deliver overflow payloads |
 
+## Demo Script Prerequisites
+
+The scripts in `demos/` run on your **host machine** (not the BBB) and require Python 3 with a small set of packages. Use a virtual environment to keep dependencies isolated.
+
+### Create and activate the venv
+
+```bash
+# From the repo root
+python3 -m venv exploit-env
+source exploit-env/bin/activate
+pip install requests pwntools
+```
+
+> The `exploit-env/` directory is gitignored. Re-run `pip install` after cloning on a new machine.
+
+### Running demo scripts
+
+Always activate the venv before running any script in `demos/`:
+
+```bash
+source exploit-env/bin/activate
+python3 demos/get_shell.py http://<bbb-ip>:8080
+```
+
+Or invoke the venv's interpreter directly without activating:
+
+```bash
+exploit-env/bin/python3 demos/get_shell.py http://<bbb-ip>:8080
+```
+
+### Demo script prerequisites
+
+Each script also requires:
+
+1. **BBB reachable** from the host machine (USB gadget Ethernet or direct Ethernet)
+2. **ASLR disabled** on the BBB (required for deterministic libc addresses):
+   ```bash
+   ssh <user>@<bbb-ip> "echo 0 | sudo tee /proc/sys/kernel/randomize_va_space"
+   ```
+3. **Service running interactively** on the BBB in a dedicated SSH terminal:
+   ```bash
+   # Terminal A — leave this open
+   ssh <user>@<bbb-ip>
+   cd ~/rop-vuln-webservice && ./rop-webservice
+   ```
+4. **Script executed from a second terminal** on the host machine (Terminal B):
+   ```bash
+   source exploit-env/bin/activate
+   python3 demos/get_shell.py http://<bbb-ip>:8080
+   ```
+
+The shell from a successful exploit appears in **Terminal A** (the BBB SSH session), not Terminal B.
+
 ## Building
 
 ### Native Build (on BBB)

