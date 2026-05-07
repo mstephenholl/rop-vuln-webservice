@@ -90,6 +90,7 @@ Key lines from the output:
    1340c:  af00        add  r7, sp, #0    ; <3>
    1340e:  6078        str  r0, [r7, #4]
    13410:  6039        str  r1, [r7, #0]
+   ...                                    ; body.c_str() call (13412–13418)
    1341a:  f107 0308   add.w r3, r7, #8   ; <4>
    1341e:  4618        mov  r0, r3
    13420:  4611        mov  r1, r2
@@ -193,8 +194,8 @@ value directly.  Without GEF:
 [source]
 ----
 (gdb) info registers pc
-pc  0x61616174  ...
-(gdb) python from pwn import *; print(cyclic_find(0x61616174))
+pc  0x61616178  ...
+(gdb) python from pwn import *; print(cyclic_find(0x61616178))
 92
 ----
 
@@ -240,7 +241,7 @@ arm-linux-gnueabihf-readelf -s /tmp/libc-bbb.so | grep " system"
 Output:
 
 ----
-  1444: 0002e211   56 FUNC  GLOBAL DEFAULT  13 system@@GLIBC_2.4
+  1327: 0002e211    32 FUNC    WEAK   DEFAULT   13 system@@GLIBC_2.4
 ----
 
 The symbol value `0x2e211` has bit 0 set — a Thumb function indicator in the
@@ -303,7 +304,7 @@ The surrounding disassembly context is critical:
 
 [source,bash]
 ----
-arm-linux-gnueabihf-objdump -d /tmp/libc-bbb.so | grep -B8 "59cfc"
+arm-linux-gnueabihf-objdump -d /tmp/libc-bbb.so | grep -B5 "59cfc"
 ----
 
 Output:
