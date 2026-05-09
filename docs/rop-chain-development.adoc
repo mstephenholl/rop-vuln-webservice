@@ -116,12 +116,13 @@ Key lines from the output:
 [source,bash]
 ----
 rizin -A rop-webservice-bbb
-[0x00010f40]> s sym._Z15handle_pi_startRKSs
+[0x000111f4]> s 0x13408
 [0x00013408]> pdf
 ----
 
-Look for the same prologue/epilogue pattern.  Rizin labels the frame slots
-automatically; the saved LR appears as `var_saved_lr`.
+Look for the same prologue/epilogue pattern.  Rizin annotates the arguments
+as `arg1 @ r0` and `arg2 @ r1` and labels the `strcpy` call site with its
+parameter types, making the vulnerable call immediately visible.
 
 === With Ghidra
 
@@ -342,27 +343,42 @@ GADGET = 0xb6d5b000 + 0x59cfc = 0xb6db4cfc
 
 === Verification with Rizin
 
+Use `rz-asm` to decode the raw instruction word without opening the file:
+
+[source,bash]
+----
+rz-asm -a arm -b 32 -e -d e8bd8011
+----
+
+Output:
+
+----
+pop {r0, r4, pc}
+----
+
+The `-e` flag tells `rz-asm` to interpret the hex string as a big-endian byte
+sequence, matching how `objdump` displays ARM instruction words.  The bytes
+decode unambiguously as `pop {r0, r4, pc}` in 32-bit ARM mode.
+
+To verify the surrounding context inside the `rizin` REPL:
+
 [source,bash]
 ----
 rizin /tmp/libc-bbb.so
-[0x00016bc8]> e asm.arch=arm
-[0x00016bc8]> e asm.bits=32
-[0x00016bc8]> s 0x59cfc
+[0x0001774c]> e asm.arch=arm
+[0x0001774c]> e asm.bits=32
+[0x0001774c]> s 0x59cfc
 [0x00059cfc]> pd 1
+[0x00059cfc]> pd -5
 ----
 
-Rizin will disassemble the word at that offset as `ldm sp!, {r0, r4, pc}` in
-ARM mode, confirming the gadget.
+`pd 1` disassembles the gadget; `pd -5` shows the five preceding instructions.
+All surrounding instructions are 4-byte ARM-mode encodings (conditional load/
+store with 32-bit operands), confirming the gadget sits in an ARM-mode region.
 
-To check the mode flag attached to the nearest ARM mapping symbol:
-
-[source,bash]
-----
-[0x00059cfc]> is~$a   # list $a (ARM) mapping symbols
-----
-
-An `$a` symbol at an address before `0x59cfc` with no intervening `$t` symbol
-confirms the gadget is ARM code.
+NOTE: The shipped `libc-2.19.so` is stripped — its `.symtab` is absent, so
+`$a`/`$t` ARM mapping symbols are not available via `is`.  Mode confirmation
+relies on the disassembly context above and the `rz-asm` decoding.
 
 == Composing the ROP Chain
 
