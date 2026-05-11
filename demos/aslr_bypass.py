@@ -89,11 +89,11 @@ OVERFLOW_OFFSET = 92
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════════╗
-║        aslr_bypass.py — ARM32 ret2libc with live ASLR defeat    ║
+║        aslr_bypass.py — ARM32 ret2libc with live ASLR defeat     ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  Leaks a runtime libc address from the GOT via the OOB-read     ║
+║  Leaks a runtime libc address from the GOT via the OOB-read      ║
 ║  primitive in GET /pi/digit, then computes all ROP addresses     ║
-║  dynamically.  Works with ASLR enabled (randomize_va_space=2).  ║
+║  dynamically.  Works with ASLR enabled (randomize_va_space=2).   ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Prerequisites                                                   ║
 ║                                                                  ║
@@ -103,8 +103,8 @@ BANNER = """
 ║       cd ~/rop-vuln-webservice && ./rop-webservice               ║
 ║  3. Terminal B — run this script from the repo root:             ║
 ║       source exploit-env/bin/activate                            ║
-║       python3 demos/aslr_bypass.py http://<bbb-ip>:8080 \\      ║
-║                                     <ssh-user> <ssh-password>   ║
+║       python3 demos/aslr_bypass.py http://<bbb-ip>:8080 \\       ║
+║                                     <ssh-user> <ssh-password>    ║
 ║                                                                  ║
 ║  The shell appears in Terminal A (the BBB SSH session).          ║
 ╚══════════════════════════════════════════════════════════════════╝
