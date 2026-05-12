@@ -431,6 +431,8 @@ stdin/stdout are the SSH terminal — the shell prompt appears there.
 
 == Running the Exploit
 
+NOTE: If you want to re-run the exploit, please make sure to restart your exploit-env or the environment you're using.
+
 === Prerequisites
 
 . ASLR disabled on the BBB:
