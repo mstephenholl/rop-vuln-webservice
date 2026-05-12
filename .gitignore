@@ -39,3 +39,7 @@
 
 # debug information files
 *.dwo
+
+# Build artifacts
+rop-webservice
+exploit-env/
