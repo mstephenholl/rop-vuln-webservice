@@ -114,6 +114,7 @@ pip install requests pwntools paramiko
 |--------|--------------|-------------|
 | `demos/get_shell.py` | **Disabled** | Hardcoded libc addresses; simplest path to a shell |
 | `demos/aslr_bypass.py` | **Enabled** | Leaks libc base via `GET /pi/digit` OOB read; computes all addresses at runtime |
+| `demos/stop_exploit.py` | **Disabled** | Hardcoded libc addresses; alternative path to a shell |
 
 Always activate the venv before running any script in `demos/`:
 
@@ -330,16 +331,7 @@ curl -X POST --data-raw '%7$x' http://localhost:8080/pi/label
 # with the /pi/start stack overflow to plant a controlled target address.
 ```
 
-### POST /pi/toggle
 
-Toggles the calculation between running and stopped. Empty body.
-
-```bash
-curl -X POST http://localhost:8080/pi/toggle
-# {"toggled": "started", "now_running": true}
-```
-
-**Vulnerable:** TOCTOU race on `m_running`. The handler reads `m_running`, sleeps 100 ms (the window), then acts on the stale value. The pi worker is a separate thread and naturally clears `m_running` when it completes — if that happens during the sleep, the handler still takes the `was_running == true` branch and calls `stop()`. The dangerous case is the inverse: `was_running == false` ⇒ the handler calls `PiCalculator::start()`, which move-assigns over `m_thread`. If the previous worker has finished but not been joined, that assignment hits `std::terminate()` and the service dies.
 
 ### GET /pi/digit?n=&lt;int&gt;
 
@@ -437,7 +429,7 @@ Common useful gadgets for ARM32:
 | `POST /pi/stop` | `handle_pi_stop` | Stack overflow | Arbitrary code redirect | `sprintf("%s", body)` into 48-byte `reason_buf` |
 | `GET /pi/digit?n=N` | `handle_pi_digit` | OOB read | Arbitrary memory read | Unchecked signed int index into BSS digit buffer |
 | `POST /pi/label` | `handle_pi_label` | Format string | Arbitrary read **and write** | `snprintf(buf, n, body)` — body is the format string |
-| `POST /pi/toggle` | `handle_pi_toggle` | TOCTOU race | DoS via `std::terminate` | Stale `m_running` read across a sleep window |
+
 
 Stack-overflow offsets depend on compiler stack-frame layout — use GDB to determine them for your build.
 

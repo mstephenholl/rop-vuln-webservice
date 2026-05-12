@@ -144,6 +144,8 @@ HttpResponse handle_pi_label(const std::string& body) {
     return resp;
 }
 
+
+// DEPRECATED. NOT UTILIZED IN OUR EXPERIMENTS. We originally planned to use this endpoint but time did not permit.
 // POST /pi/toggle
 // VULNERABLE: TOCTOU race on m_running. Even though HTTP requests are
 // serialised on the main thread, the pi worker thread runs concurrently
@@ -153,6 +155,7 @@ HttpResponse handle_pi_label(const std::string& body) {
 // std::thread's contract calls std::terminate() in that case, killing the
 // service. The deliberate 100 ms sleep widens the window so the race is
 // reachable from a single client.
+// 
 HttpResponse handle_pi_toggle() {
     // --- TOCTOU VULNERABILITY: time-of-check ---
     bool was_running = g_pi_calc.running();
